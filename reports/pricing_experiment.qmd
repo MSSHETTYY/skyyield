@@ -1,0 +1,81 @@
+---
+title: "Pricing experiment: +5% quotes"
+subtitle: "SkyYield, independent analysis in R"
+format:
+  html:
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+---
+
+This report re-analyses the simulated pricing A/B test in R, independently of the
+Python toolkit, as a cross-check. Generate the data first:
+
+```bash
+python scripts/pricing_experiment.py   # writes reports/data/pricing_experiment.csv
+quarto render reports/pricing_experiment.qmd
+```
+
+```{r}
+#| label: load
+df <- read.csv("data/pricing_experiment.csv")
+df$treated <- df$arm == "treatment"
+table(df$arm)
+```
+
+## Raw comparison
+
+Revenue per shipper is heavy-tailed, so the raw test is noisy.
+
+```{r}
+#| label: raw
+raw <- t.test(revenue ~ treated, data = df)  # Welch by default
+raw
+```
+
+## CUPED with pre-period revenue
+
+```{r}
+#| label: cuped
+theta <- cov(df$revenue, df$pre_revenue) / var(df$pre_revenue)
+df$revenue_cuped <- df$revenue - theta * (df$pre_revenue - mean(df$pre_revenue))
+cat(sprintf("theta = %.3f, variance reduction = %.0f%%\n",
+            theta, 100 * (1 - var(df$revenue_cuped) / var(df$revenue))))
+adj <- t.test(revenue_cuped ~ treated, data = df)
+adj
+lift <- diff(rev(adj$estimate)) / adj$estimate[["mean in group FALSE"]]
+cat(sprintf("relative lift (treatment vs control): %+.1f%%\n", 100 * lift))
+```
+
+The same estimate as a regression with the covariate, which also gives a
+heteroskedasticity-robust standard error:
+
+```{r}
+#| label: ancova
+fit <- lm(revenue ~ treated + pre_revenue, data = df)
+X <- model.matrix(fit)
+e <- residuals(fit)
+bread <- solve(crossprod(X))
+hc1 <- bread %*% crossprod(X * e) %*% bread * nrow(X) / (nrow(X) - ncol(X))
+est <- coef(fit)[["treatedTRUE"]]
+se <- sqrt(hc1["treatedTRUE", "treatedTRUE"])
+cat(sprintf("treatment effect %.0f USD/shipper, 95%% CI [%.0f, %.0f]\n",
+            est, est - 1.96 * se, est + 1.96 * se))
+```
+
+## Who reacts to price
+
+```{r}
+#| label: segments
+seg <- aggregate(revenue ~ segment + arm, data = df, FUN = mean)
+wide <- reshape(seg, idvar = "segment", timevar = "arm", direction = "wide")
+wide$lift_pct <- round(100 * (wide$revenue.treatment / wide$revenue.control - 1), 1)
+wide[order(wide$lift_pct), c("segment", "lift_pct")]
+```
+
+## Recommendation
+
+A blanket 5% increase lowers revenue per shipper, driven by e-commerce and regional
+forwarders. Pharma shippers are the exception, which matches the price-response
+curves in `cargokit.optimize.pricing`: price by segment, not across the board.
