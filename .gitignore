@@ -3,7 +3,8 @@ __pycache__/
 .venv/
 .pytest_cache/
 .ruff_cache/
-data/
+/data/
+/reports/data/
 mlruns/
 spark-warehouse/
 metastore_db/
